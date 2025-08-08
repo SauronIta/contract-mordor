@@ -3,14 +3,15 @@
   "version": "1.0.0",
   "type": "module",
   "main": "server.mjs",
+  "engines": { "node": ">=18.0.0" },
   "scripts": {
     "start": "node server.mjs",
-    "postinstall": "npx playwright install --with-deps chromium"
+    "postinstall": "npx playwright install chromium"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "node-fetch": "^3.3.2",
-    "playwright": "^1.46.1"
+    "playwright": "^1.48.0"
   }
 }
