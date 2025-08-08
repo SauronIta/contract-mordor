@@ -3,10 +3,6 @@ import express from "express";
 import { chromium } from "playwright";
 import fetch from "node-fetch";
 
-const app = express();
-app.use(express.json());
-app.use(express.static("public"));
-
 /* ---------- Config ---------- */
 const GLOBAL = {
   POLL_SECONDS: +(process.env.POLL_SECONDS || 60),
@@ -22,14 +18,17 @@ console.log("[boot]", {
 });
 
 /* ---------- In-memory store ---------- */
-// item: { id, name, url, enabled, lastCheck, alerts, buyHash, lastBuyCount, lastAlertAt }
+// item: { id, name, url, enabled, lastCheck, alerts, buyHash, lastBuyCount, lastAlertAt, faction }
 const items = new Map();
-const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-function addItem({ name, url, enabled = true }) {
+const newId = () =>
+  Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
+function addItem({ name, url, faction, enabled = true }) {
   const it = {
     id: newId(),
     name,
     url,
+    faction,
     enabled,
     lastCheck: null,
     alerts: 0,
@@ -43,9 +42,18 @@ function addItem({ name, url, enabled = true }) {
 
 /* ---------- Utils ---------- */
 const nowSec = () => Math.floor(Date.now() / 1000);
-const hashString = (s) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return (h >>> 0).toString(16); };
-const normalizeNum = (x) => { const f = parseFloat(String(x).replace(",", ".")); return Number.isFinite(f) ? +f.toFixed(10) : null; };
-const looksLikeMarketUrl = (u) => /(orderbook|order-book|book|orders|bids?|buy)/i.test(u);
+const hashString = (s) => {
+  let h = 0;
+  for (let i = 0; i < s.length; i++)
+    h = (h * 31 + s.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(16);
+};
+const normalizeNum = (x) => {
+  const f = parseFloat(String(x).replace(",", "."));
+  return Number.isFinite(f) ? +f.toFixed(10) : null;
+};
+const looksLikeMarketUrl = (u) =>
+  /(orderbook|order-book|book|orders|bids?|buy)/i.test(u);
 
 /* ---------- Estrazione BUY dai JSON ---------- */
 function extractBuysFromJson(data) {
@@ -56,22 +64,38 @@ function extractBuysFromJson(data) {
     if (typeof node === "object") {
       const keys = Object.keys(node).map((k) => k.toLowerCase());
       const get = (names) => {
-        for (const k of keys) for (const n of names)
-          if (k === n || k.endsWith("_" + n) || k.includes(n))
-            return node[Object.keys(node)[keys.indexOf(k)]];
+        for (const k of keys) {
+          for (const n of names) {
+            if (
+              k === n ||
+              k.endsWith("_" + n) ||
+              k.includes(n)
+            )
+              return node[Object.keys(node)[keys.indexOf(k)]];
+          }
+        }
         return undefined;
       };
       const price = normalizeNum(get(["price", "p", "bid", "bestbid"]));
-      const qty   = normalizeNum(get(["quantity", "qty", "q", "amount", "size"]));
-      const side  = String(get(["side", "type", "order_type"]) ?? "").toLowerCase();
-      if (price !== null && qty !== null && (!side || /buy|bid/.test(side))) buys.push({ price, qty });
+      const qty = normalizeNum(get(["quantity", "qty", "q", "amount", "size"]));
+      const side = String(
+        get(["side", "type", "order_type"]) ?? ""
+      ).toLowerCase();
+      if (
+        price !== null &&
+        qty !== null &&
+        (!side || /buy|bid/.test(side))
+      )
+        buys.push({ price, qty });
       for (const v of Object.values(node)) scan(v);
     }
   };
   scan(data);
   buys.sort((a, b) => b.price - a.price);
   const top = buys.slice(0, 15);
-  const signature = top.map((o) => `${o.price.toFixed(8)}|${o.qty.toFixed(8)}`).join("\n");
+  const signature = top
+    .map((o) => `${o.price.toFixed(8)}|${o.qty.toFixed(8)}`)
+    .join("\n");
   return { list: top, signature: signature ? hashString(signature) : "" };
 }
 
@@ -109,21 +133,49 @@ async function snapshotNetwork(url, headless = true) {
     try {
       const data = JSON.parse(t);
       const { list, signature } = extractBuysFromJson(data);
-      if (signature) { signatures.push(signature); totalBuyCount += list.length; }
+      if (signature) {
+        signatures.push(signature);
+        totalBuyCount += list.length;
+      }
     } catch {}
   }
   return { buySignatures: signatures, buyCount: totalBuyCount };
 }
 
-/* ---------- Discord embeds ---------- */
-function colorFromName(name) { let h = 0; for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0; return (h >>> 0) & 0xffffff; }
-async function sendDiscordEmbed({ username, title, description, url, color }) {
+/* ---------- Discord embeds con icone ---------- */
+function factionIconAndColor(faction) {
+  switch (faction) {
+    case "oni":
+      return { emoji: "🔵", color: 0x3498db };
+    case "mud":
+      return { emoji: "🔴", color: 0xe74c3c };
+    case "ustur":
+      return { emoji: "🟡", color: 0xf1c40f };
+    default:
+      return { emoji: "⚪", color: 0x95a5a6 };
+  }
+}
+
+async function sendDiscordEmbed({ item, diff, buyCount }) {
   if (!GLOBAL.DISCORD_WEBHOOK) return;
+  const { emoji, color } = factionIconAndColor(item.faction);
   try {
     const r = await fetch(GLOBAL.DISCORD_WEBHOOK, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, embeds: [{ title, description, url, color }] }),
+      body: JSON.stringify({
+        username: `${emoji} ${item.name}`,
+        embeds: [
+          {
+            title: `BUY ORDERS aggiornati — ${item.name}`,
+            description:
+              `Variazione righe BUY: ${item.lastBuyCount} → ${buyCount} ` +
+              `(${diff >= 0 ? "+" + diff : diff})\n${item.url}`,
+            url: item.url,
+            color,
+          },
+        ],
+      }),
     });
     if (!(r.status === 204 || r.ok)) {
       const txt = await r.text().catch(() => "(no body)");
@@ -137,7 +189,10 @@ async function sendDiscordEmbed({ username, title, description, url, color }) {
 /* ---------- Check singolo item ---------- */
 async function checkItem(item) {
   if (!item.enabled) return;
-  const { buySignatures, buyCount } = await snapshotNetwork(item.url, GLOBAL.HEADLESS);
+  const { buySignatures, buyCount } = await snapshotNetwork(
+    item.url,
+    GLOBAL.HEADLESS
+  );
   item.lastCheck = new Date().toISOString();
   if (buySignatures.length === 0) return;
 
@@ -147,90 +202,61 @@ async function checkItem(item) {
       item.alerts++;
       item.lastAlertAt = nowSec();
       const diff = buyCount - item.lastBuyCount;
-      await sendDiscordEmbed({
-        username: item.name,
-        title: `BUY ORDERS aggiornati — ${item.name}`,
-        description:
-          `Variazione righe BUY (stima): ${item.lastBuyCount} → ${buyCount} ` +
-          `(${diff >= 0 ? "+" + diff : diff})\n` +
-          `${item.url}`,
-        url: item.url,
-        color: colorFromName(item.name),
-      });
+      await sendDiscordEmbed({ item, diff, buyCount });
     }
   }
   item.buyHash = combinedHash;
   item.lastBuyCount = buyCount;
 }
 
-/* ---------- Scheduler (parte DOPO che il server è su) ---------- */
+/* ---------- Scheduler ---------- */
 function startScheduler() {
   (async function loop() {
     while (true) {
       const active = Array.from(items.values()).filter((i) => i.enabled);
       for (const it of active) {
-        try { await checkItem(it); } catch (e) { console.log("check error:", it.name, e); }
+        try {
+          await checkItem(it);
+        } catch (e) {
+          console.log("check error:", it.name, e);
+        }
         await new Promise((r) => setTimeout(r, 800));
       }
-      await new Promise((r) => setTimeout(r, Math.max(5, GLOBAL.POLL_SECONDS) * 1000));
+      await new Promise((r) =>
+        setTimeout(r, Math.max(5, GLOBAL.POLL_SECONDS) * 1000)
+      );
     }
   })();
 }
 
 /* ---------- API + Health ---------- */
-app.get("/", (_req, res) => res.status(200).send("Bot is running!")); // keep-alive OK
+const app = express();
+app.use(express.json());
+app.get("/", (_req, res) => res.status(200).send("Bot is running!"));
+app.get("/health", (_req, res) => res.json({ ok: true, time: new Date() }));
 
-app.get("/api/items", (_req, res) =>
-  res.json({ items: Array.from(items.values()), pollSeconds: GLOBAL.POLL_SECONDS })
-);
+/* ---------- Seed iniziale con link e fazioni ---------- */
+// Oni (blu)
+addItem({ name: "Oni Infrastructure Contract", url: "https://atlas.eveeye.com/?market&markets=2&item=oicT4ECU7nuPBZD2HUg8sb9nG4MDXWaE8vAnzwzXqcg&currency=ATLAS&chart=area", faction: "oni" });
+addItem({ name: "Oni Contract Vaors Order", url: "https://atlas.eveeye.com/?market&markets=2&item=oiC26XFt8HR1xzw3Y6WJ9wMTdtY1g9k1mthMqwRAn1X&currency=ATLAS&chart=area", faction: "oni" });
+addItem({ name: "Oni Quantum Nodes", url: "https://atlas.eveeye.com/?market&markets=2&item=ic3AfsMFGKjkftEkpZLLdCGHmSQX5RwH92zhXUZVNCW&currency=ATLAS&chart=area", faction: "oni" });
+addItem({ name: "Oni Starpath Cells", url: "https://atlas.eveeye.com/?market&markets=2&item=ic3BNHDBzoW8suW4q9a9qt5PkK7D38T4raGDc1gyuRh&currency=ATLAS&chart=area", faction: "oni" });
 
-app.post("/api/items", (req, res) => {
-  const { name, url, enabled = true } = req.body || {};
-  if (!name || !url) return res.status(400).json({ ok: false, error: "name e url obbligatori" });
-  const it = addItem({ name, url, enabled });
-  res.json({ ok: true, item: it });
-});
+// Mud (rosso)
+addItem({ name: "Mud Quantum Nodes", url: "https://atlas.eveeye.com/?market&markets=1&item=ic3AfsMFGKjkftEkpZLLdCGHmSQX5RwH92zhXUZVNCW&currency=ATLAS&chart=area", faction: "mud" });
+addItem({ name: "Mud Starpath Cells", url: "https://atlas.eveeye.com/?market&markets=1&item=ic3BNHDBzoW8suW4q9a9qt5PkK7D38T4raGDc1gyuRh&currency=ATLAS&chart=area", faction: "mud" });
+addItem({ name: "Mud Gotti's Favor", url: "https://atlas.eveeye.com/?market&markets=1&item=mic2AcEbMAjxoYGWaobvTMKzzNraSRVFaDaKEM2YrTD&currency=ATLAS&chart=area", faction: "mud" });
+addItem({ name: "Mud Infrastructure Contract", url: "https://atlas.eveeye.com/?market&markets=1&item=mic9ZayXBs7x3T6qgM2VskuaWFC8egCQBkTHcy8BoPM&currency=ATLAS&chart=area", faction: "mud" });
 
-app.patch("/api/items/:id", (req, res) => {
-  const it = items.get(req.params.id);
-  if (!it) return res.status(404).json({ ok: false, error: "not found" });
-  const { name, url, enabled } = req.body || {};
-  if (name !== undefined) it.name = name;
-  if (url !== undefined) { it.url = url; it.buyHash = null; it.lastBuyCount = 0; }
-  if (enabled !== undefined) it.enabled = !!enabled;
-  res.json({ ok: true, item: it });
-});
+// Ustur (giallo)
+addItem({ name: "Ustur Opo's Request", url: "https://atlas.eveeye.com/?market&markets=3&item=uiC2QNxpUxu1VqFefrbN6eDucaW2g9YnB4EZosMQeec&currency=ATLAS&chart=area", faction: "ustur" });
+addItem({ name: "Ustur Infrastructure Contract", url: "https://atlas.eveeye.com/?market&markets=3&item=uicF2zhVoZguiFbr2KWp3kFBYwezs6HZqMzQfLbXw1A&currency=ATLAS&chart=area", faction: "ustur" });
+addItem({ name: "Ustur Quantum Nodes", url: "https://atlas.eveeye.com/?market&markets=3&item=ic3AfsMFGKjkftEkpZLLdCGHmSQX5RwH92zhXUZVNCW&currency=ATLAS&chart=area", faction: "ustur" });
+addItem({ name: "Ustur Starpath Cells", url: "https://atlas.eveeye.com/?market&markets=3&item=ic3BNHDBzoW8suW4q9a9qt5PkK7D38T4raGDc1gyuRh&currency=ATLAS&chart=area", faction: "ustur" });
 
-app.delete("/api/items/:id", (req, res) => res.json({ ok: items.delete(req.params.id) }));
-
-app.post("/api/run/:id", async (req, res) => {
-  const it = items.get(req.params.id);
-  if (!it) return res.status(404).json({ ok: false, error: "not found" });
-  try { await checkItem(it); res.json({ ok: true }); }
-  catch (e) { res.status(500).json({ ok: false, error: String(e) }); }
-});
-
-app.post("/api/test-discord", async (_req, res) => {
-  await sendDiscordEmbed({
-    username: "Test Monitor",
-    title: "✅ Test webhook: connesso",
-    description: "Questo è un messaggio di prova.",
-    url: "https://example.com",
-    color: 0x43b581,
-  });
-  res.json({ ok: true });
-});
-
-/* ---------- Seed disabilitato ---------- */
-addItem({
-  name: "Infrastructure Contract",
-  url: "https://atlas.eveeye.com/?market&markets=2&item=oicT4ECU7nuPBZD2HUg8sb9nG4MDXWaE8vAnzwzXqcg&currency=ATLAS&chart=area",
-  enabled: false,
-});
-
-/* ---------- Avvio server, POI parte il loop ---------- */
+/* ---------- Avvio server ---------- */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(new Date().toISOString(), "Server on :" + PORT);
-  setTimeout(startScheduler, 8000); // parte 8s dopo: evita 502 in cold start
+  setTimeout(startScheduler, 8000);
 });
