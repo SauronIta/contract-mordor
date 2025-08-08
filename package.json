@@ -1,17 +1,17 @@
 {
   "name": "star-atlas-monitor",
   "version": "1.0.0",
-  "description": "Monitor ordini Star Atlas con alert Discord",
-  "main": "server.mjs",
+  "description": "Monitor EveEye BUY ORDERS + alert Discord (Render-ready)",
   "type": "module",
+  "engines": { "node": ">=18.0.0" },
   "scripts": {
-    "postinstall": "npx playwright install-deps && npx playwright install chromium",
-    "start": "node server.mjs"
+    "start": "node server.mjs",
+    "postinstall": "npx playwright install --with-deps chromium"
   },
   "dependencies": {
-    "dotenv": "^16.0.3",
-    "express": "^4.18.2",
-    "node-fetch": "^3.3.1",
-    "playwright": "^1.39.0"
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "node-fetch": "^3.3.2",
+    "playwright": "^1.48.0"
   }
 }
