@@ -5,7 +5,6 @@ import fetch from "node-fetch";
 
 const app = express();
 app.use(express.json());
-// serve la UI dalla cartella /public (root "/")
 app.use(express.static("public"));
 
 /* ---------- Config ---------- */
@@ -44,7 +43,7 @@ function addItem({ name, url, enabled = true }) {
 
 /* ---------- Utils ---------- */
 const nowSec = () => Math.floor(Date.now() / 1000);
-const hashString = (s) => { let h=0; for (let i=0;i<s.length;i++) h=(h*31 + s.charCodeAt(i))|0; return (h>>>0).toString(16); };
+const hashString = (s) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return (h >>> 0).toString(16); };
 const normalizeNum = (x) => { const f = parseFloat(String(x).replace(",", ".")); return Number.isFinite(f) ? +f.toFixed(10) : null; };
 const looksLikeMarketUrl = (u) => /(orderbook|order-book|book|orders|bids?|buy)/i.test(u);
 
@@ -55,25 +54,24 @@ function extractBuysFromJson(data) {
     if (!node) return;
     if (Array.isArray(node)) return node.forEach(scan);
     if (typeof node === "object") {
-      const keys = Object.keys(node).map(k => k.toLowerCase());
+      const keys = Object.keys(node).map((k) => k.toLowerCase());
       const get = (names) => {
         for (const k of keys) for (const n of names)
-          if (k === n || k.endsWith("_"+n) || k.includes(n))
+          if (k === n || k.endsWith("_" + n) || k.includes(n))
             return node[Object.keys(node)[keys.indexOf(k)]];
         return undefined;
       };
-      const price = normalizeNum(get(["price","p","bid","bestbid"]));
-      const qty   = normalizeNum(get(["quantity","qty","q","amount","size"]));
-      const side  = String(get(["side","type","order_type"]) ?? "").toLowerCase();
+      const price = normalizeNum(get(["price", "p", "bid", "bestbid"]));
+      const qty   = normalizeNum(get(["quantity", "qty", "q", "amount", "size"]));
+      const side  = String(get(["side", "type", "order_type"]) ?? "").toLowerCase();
       if (price !== null && qty !== null && (!side || /buy|bid/.test(side))) buys.push({ price, qty });
       for (const v of Object.values(node)) scan(v);
     }
   };
   scan(data);
-
-  buys.sort((a,b)=> b.price - a.price);
+  buys.sort((a, b) => b.price - a.price);
   const top = buys.slice(0, 15);
-  const signature = top.map(o => `${o.price.toFixed(8)}|${o.qty.toFixed(8)}`).join("\n");
+  const signature = top.map((o) => `${o.price.toFixed(8)}|${o.qty.toFixed(8)}`).join("\n");
   return { list: top, signature: signature ? hashString(signature) : "" };
 }
 
@@ -81,7 +79,11 @@ function extractBuysFromJson(data) {
 async function snapshotNetwork(url, headless = true) {
   const browser = await chromium.launch({
     headless,
-    args: ["--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage"],
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+    ],
   });
   const page = await browser.newPage();
   const jsonTexts = [];
@@ -114,20 +116,20 @@ async function snapshotNetwork(url, headless = true) {
 }
 
 /* ---------- Discord embeds ---------- */
-function colorFromName(name){ let h=0; for(let i=0;i<name.length;i++) h=(h*31 + name.charCodeAt(i))|0; return (h>>>0) & 0xFFFFFF; }
+function colorFromName(name) { let h = 0; for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0; return (h >>> 0) & 0xffffff; }
 async function sendDiscordEmbed({ username, title, description, url, color }) {
   if (!GLOBAL.DISCORD_WEBHOOK) return;
   try {
     const r = await fetch(GLOBAL.DISCORD_WEBHOOK, {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ username, embeds: [{ title, description, url, color }] })
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, embeds: [{ title, description, url, color }] }),
     });
-    if (!(r.status===204 || r.ok)) {
-      const txt = await r.text().catch(()=>"(no body)");
-      console.log("[discord] embed fail", r.status, txt.slice(0,200));
+    if (!(r.status === 204 || r.ok)) {
+      const txt = await r.text().catch(() => "(no body)");
+      console.log("[discord] embed fail", r.status, txt.slice(0, 200));
     }
-  } catch(e) {
+  } catch (e) {
     console.log("[discord] embed error", e);
   }
 }
@@ -142,7 +144,8 @@ async function checkItem(item) {
   const combinedHash = hashString(buySignatures.join("|"));
   if (item.buyHash && item.buyHash !== combinedHash) {
     if (nowSec() - item.lastAlertAt >= GLOBAL.ALERT_COOLDOWN_SEC) {
-      item.alerts++; item.lastAlertAt = nowSec();
+      item.alerts++;
+      item.lastAlertAt = nowSec();
       const diff = buyCount - item.lastBuyCount;
       await sendDiscordEmbed({
         username: item.name,
@@ -160,63 +163,62 @@ async function checkItem(item) {
   item.lastBuyCount = buyCount;
 }
 
-/* ---------- Scheduler: parte DOPO che il server è su ---------- */
+/* ---------- Scheduler (parte DOPO che il server è su) ---------- */
 function startScheduler() {
-  (async function loop(){
-    while(true){
-      const active = Array.from(items.values()).filter(i=>i.enabled);
+  (async function loop() {
+    while (true) {
+      const active = Array.from(items.values()).filter((i) => i.enabled);
       for (const it of active) {
-        try { await checkItem(it); } catch(e){ console.log("check error:", it.name, e); }
-        await new Promise(r=>setTimeout(r, 800));
+        try { await checkItem(it); } catch (e) { console.log("check error:", it.name, e); }
+        await new Promise((r) => setTimeout(r, 800));
       }
-      await new Promise(r=>setTimeout(r, Math.max(5, GLOBAL.POLL_SECONDS)*1000 ));
+      await new Promise((r) => setTimeout(r, Math.max(5, GLOBAL.POLL_SECONDS) * 1000));
     }
   })();
 }
 
-/* ---------- Health route (per cron-job) ---------- */
-app.get("/health", (_req, res) => res.status(200).send("OK"));
+/* ---------- API + Health ---------- */
+app.get("/", (_req, res) => res.status(200).send("Bot is running!")); // keep-alive OK
 
-/* ---------- API + UI ---------- */
 app.get("/api/items", (_req, res) =>
   res.json({ items: Array.from(items.values()), pollSeconds: GLOBAL.POLL_SECONDS })
 );
 
 app.post("/api/items", (req, res) => {
   const { name, url, enabled = true } = req.body || {};
-  if (!name || !url) return res.status(400).json({ ok:false, error:"name e url obbligatori" });
+  if (!name || !url) return res.status(400).json({ ok: false, error: "name e url obbligatori" });
   const it = addItem({ name, url, enabled });
-  res.json({ ok:true, item: it });
+  res.json({ ok: true, item: it });
 });
 
-app.patch("/api/items/:id", (req,res)=>{
+app.patch("/api/items/:id", (req, res) => {
   const it = items.get(req.params.id);
-  if (!it) return res.status(404).json({ ok:false, error:"not found" });
+  if (!it) return res.status(404).json({ ok: false, error: "not found" });
   const { name, url, enabled } = req.body || {};
   if (name !== undefined) it.name = name;
-  if (url !== undefined){ it.url = url; it.buyHash=null; it.lastBuyCount=0; }
+  if (url !== undefined) { it.url = url; it.buyHash = null; it.lastBuyCount = 0; }
   if (enabled !== undefined) it.enabled = !!enabled;
-  res.json({ ok:true, item: it });
+  res.json({ ok: true, item: it });
 });
 
-app.delete("/api/items/:id", (req,res)=> res.json({ ok: items.delete(req.params.id) }) );
+app.delete("/api/items/:id", (req, res) => res.json({ ok: items.delete(req.params.id) }));
 
-app.post("/api/run/:id", async (req,res)=>{
+app.post("/api/run/:id", async (req, res) => {
   const it = items.get(req.params.id);
-  if (!it) return res.status(404).json({ ok:false, error:"not found" });
-  try { await checkItem(it); res.json({ ok:true }); }
-  catch(e){ res.status(500).json({ ok:false, error:String(e) }); }
+  if (!it) return res.status(404).json({ ok: false, error: "not found" });
+  try { await checkItem(it); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ ok: false, error: String(e) }); }
 });
 
-app.post("/api/test-discord", async (_req,res)=>{
+app.post("/api/test-discord", async (_req, res) => {
   await sendDiscordEmbed({
-    username:"Test Monitor",
-    title:"✅ Test webhook: connesso",
-    description:"Questo è un messaggio di prova.",
-    url:"https://example.com",
-    color:0x43b581
+    username: "Test Monitor",
+    title: "✅ Test webhook: connesso",
+    description: "Questo è un messaggio di prova.",
+    url: "https://example.com",
+    color: 0x43b581,
   });
-  res.json({ ok:true });
+  res.json({ ok: true });
 });
 
 /* ---------- Seed disabilitato ---------- */
