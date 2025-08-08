@@ -1,12 +1,12 @@
 {
   "name": "star-atlas-monitor",
   "version": "1.0.0",
-  "description": "Monitor EveEye BUY ORDERS + alert Discord (Render-ready)",
+  "description": "Monitor EveEye BUY ORDERS + alert Discord (Render-friendly)",
   "type": "module",
   "engines": { "node": ">=18.0.0" },
   "scripts": {
     "start": "node server.mjs",
-    "postinstall": "npx playwright install --with-deps chromium"
+    "postinstall": "npx playwright install chromium"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
