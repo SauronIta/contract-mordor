@@ -7,6 +7,7 @@ const app = express();
 app.use(express.json());
 app.use(express.static("public"));
 
+/* ---------- Config ---------- */
 const GLOBAL = {
   POLL_SECONDS: +(process.env.POLL_SECONDS || 60),
   HEADLESS: (process.env.HEADLESS || "true").toLowerCase() === "true",
@@ -20,15 +21,14 @@ console.log("[boot]", {
   cooldown: GLOBAL.ALERT_COOLDOWN_SEC,
 });
 
-// ===== Store =====
+/* ---------- In-memory store ---------- */
 // item: { id, name, url, enabled, lastCheck, alerts, buyHash, lastBuyCount, lastAlertAt }
 const items = new Map();
 const newId = () =>
   Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 function addItem({ name, url, enabled = true }) {
-  const id = newId();
   const it = {
-    id,
+    id: newId(),
     name,
     url,
     enabled,
@@ -38,11 +38,11 @@ function addItem({ name, url, enabled = true }) {
     lastBuyCount: 0,
     lastAlertAt: 0,
   };
-  items.set(id, it);
+  items.set(it.id, it);
   return it;
 }
 
-// ===== Utils =====
+/* ---------- Utils ---------- */
 const nowSec = () => Math.floor(Date.now() / 1000);
 const hashString = (s) => {
   let h = 0;
@@ -53,18 +53,16 @@ const normalizeNum = (x) => {
   const f = parseFloat(String(x).replace(",", "."));
   return Number.isFinite(f) ? +f.toFixed(10) : null;
 };
+// riduci rumore: ascolta solo endpoint che “suonano” come orderbook/buy
 const looksLikeMarketUrl = (u) =>
   /(orderbook|order-book|book|orders|bids?|buy)/i.test(u);
 
-// ===== Estrazione BUY da JSON =====
+/* ---------- Estrazione BUY dai JSON ---------- */
 function extractBuysFromJson(data) {
   const buys = [];
   const scan = (node) => {
     if (!node) return;
-    if (Array.isArray(node)) {
-      node.forEach(scan);
-      return;
-    }
+    if (Array.isArray(node)) return node.forEach(scan);
     if (typeof node === "object") {
       const keys = Object.keys(node).map((k) => k.toLowerCase());
       const get = (names) => {
@@ -77,7 +75,6 @@ function extractBuysFromJson(data) {
       const price = normalizeNum(get(["price", "p", "bid", "bestbid"]));
       const qty = normalizeNum(get(["quantity", "qty", "q", "amount", "size"]));
       const side = String(get(["side", "type", "order_type"]) ?? "").toLowerCase();
-
       if (price !== null && qty !== null && (!side || /buy|bid/.test(side))) {
         buys.push({ price, qty });
       }
@@ -86,7 +83,7 @@ function extractBuysFromJson(data) {
   };
   scan(data);
 
-  // top of book stabile (prime 15 bid)
+  // firma stabile: prime 15 bid ordinate per prezzo
   buys.sort((a, b) => b.price - a.price);
   const top = buys.slice(0, 15);
   const signature = top
@@ -95,7 +92,7 @@ function extractBuysFromJson(data) {
   return { list: top, signature: signature ? hashString(signature) : "" };
 }
 
-// ===== Snapshot: ascolta XHR/JSON dell’order book =====
+/* ---------- Snapshot rete: intercetta XHR/JSON ---------- */
 async function snapshotNetwork(url, headless = true) {
   const browser = await chromium.launch({
     headless,
@@ -125,7 +122,6 @@ async function snapshotNetwork(url, headless = true) {
 
   let signatures = [];
   let totalBuyCount = 0;
-
   for (const t of jsonTexts) {
     try {
       const data = JSON.parse(t);
@@ -136,27 +132,22 @@ async function snapshotNetwork(url, headless = true) {
       }
     } catch {}
   }
-
   return { buySignatures: signatures, buyCount: totalBuyCount };
 }
 
-// ===== Discord (embed colorato per nome) =====
+/* ---------- Discord embeds ---------- */
 function colorFromName(name) {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
   return (h >>> 0) & 0xffffff; // 0xRRGGBB
 }
-
 async function sendDiscordEmbed({ username, title, description, url, color }) {
   if (!GLOBAL.DISCORD_WEBHOOK) return;
   try {
     const r = await fetch(GLOBAL.DISCORD_WEBHOOK, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        username, // mittente = nome oggetto
-        embeds: [{ title, description, url, color }],
-      }),
+      body: JSON.stringify({ username, embeds: [{ title, description, url, color }] }),
     });
     if (!(r.status === 204 || r.ok)) {
       const txt = await r.text().catch(() => "(no body)");
@@ -167,7 +158,7 @@ async function sendDiscordEmbed({ username, title, description, url, color }) {
   }
 }
 
-// ===== Check =====
+/* ---------- Check singolo item ---------- */
 async function checkItem(item) {
   if (!item.enabled) return;
   const { buySignatures, buyCount } = await snapshotNetwork(
@@ -179,7 +170,7 @@ async function checkItem(item) {
 
   const combinedHash = hashString(buySignatures.join("|"));
   if (item.buyHash && item.buyHash !== combinedHash) {
-    // cooldown anti-spam
+    // anti-spam
     if (nowSec() - item.lastAlertAt >= GLOBAL.ALERT_COOLDOWN_SEC) {
       item.alerts++;
       item.lastAlertAt = nowSec();
@@ -197,12 +188,11 @@ async function checkItem(item) {
       });
     }
   }
-
   item.buyHash = combinedHash;
   item.lastBuyCount = buyCount;
 }
 
-// ===== Scheduler =====
+/* ---------- Scheduler ---------- */
 (async function loop() {
   while (true) {
     const active = Array.from(items.values()).filter((i) => i.enabled);
@@ -220,17 +210,17 @@ async function checkItem(item) {
   }
 })();
 
-// ===== API per UI =====
-app.get("/api/items", (_, res) =>
+/* ---------- API per UI ---------- */
+app.get("/", (_req, res) => res.status(200).send("Bot is running!")); // keep-alive OK
+
+app.get("/api/items", (_req, res) =>
   res.json({ items: Array.from(items.values()), pollSeconds: GLOBAL.POLL_SECONDS })
 );
 
 app.post("/api/items", (req, res) => {
   const { name, url, enabled = true } = req.body || {};
   if (!name || !url)
-    return res
-      .status(400)
-      .json({ ok: false, error: "name e url obbligatori" });
+    return res.status(400).json({ ok: false, error: "name e url obbligatori" });
   const it = addItem({ name, url, enabled });
   res.json({ ok: true, item: it });
 });
@@ -264,7 +254,7 @@ app.post("/api/run/:id", async (req, res) => {
   }
 });
 
-app.post("/api/test-discord", async (_, res) => {
+app.post("/api/test-discord", async (_req, res) => {
   await sendDiscordEmbed({
     username: "Test Monitor",
     title: "✅ Test webhook: connesso",
@@ -275,13 +265,14 @@ app.post("/api/test-discord", async (_, res) => {
   res.json({ ok: true });
 });
 
-// Seed (disabilitato)
+/* ---------- Seed disabilitato (puoi attivarlo) ---------- */
 addItem({
   name: "Infrastructure Contract",
   url: "https://atlas.eveeye.com/?market&markets=2&item=oicT4ECU7nuPBZD2HUg8sb9nG4MDXWaE8vAnzwzXqcg&currency=ATLAS&chart=area",
   enabled: false,
 });
 
+/* ---------- Avvio ---------- */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
   console.log(new Date().toISOString(), "Server on :" + PORT)
